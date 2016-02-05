@@ -97,12 +97,15 @@ module GeminaboxRelease
       protected
 
       # pushes to geminabox
-      def inabox_push(path, force = false)
+      def inabox_push(path, force = false, redirect_count = 10)
+        raise "Error redirect count reached, aborting" if redirect_count == 0
         uri = URI.parse(GeminaboxRelease.host)
         username = uri.user
         password = uri.password
-        uri.path = uri.path + "/" unless uri.path.end_with?("/")
-        uri.path += "upload"
+        if redirect_count == 10 # Don't append upload if we have redirected
+          uri.path = uri.path + "/" unless uri.path.end_with?("/")
+          uri.path += "upload"
+        end
 
         #############
         # prepare multipart file post
@@ -135,12 +138,20 @@ module GeminaboxRelease
         req['Accept'] = 'text/plain'
         req["Content-Type"] = "multipart/form-data; boundary=#{boundary}"
         response = http.request(req)
-        if response.code.to_i < 300
+        case response
+          when Net::HTTPSuccess then
           if response.body.start_with?("Gem #{File.basename(path)} received and indexed")
             Bundler.ui.confirm("Gem #{File.basename(path)} received and indexed.")
           else
             Bundler.ui.error "Error received\n\n#{response.body}"
           end
+          when Net::HTTPRedirection then
+            # Carry over basic credentials from original URI
+            new_uri = URI.parse(response['location'])
+            new_uri.user = uri.user
+            new_uri.password = uri.password
+            GeminaboxRelease.patch(:host => new_uri.to_s)
+            inabox_push(path, force, redirect_count - 1)
         else
           raise "Error (#{response.code} received)\n\n#{response.body}"
         end
